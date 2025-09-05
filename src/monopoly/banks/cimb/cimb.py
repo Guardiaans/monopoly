@@ -51,9 +51,7 @@ class Cimb(BankBase):
             multiline_transaction_date=True,
             include_prev_margin=12,
             allow_no_date_no_amount_continuation=True,
-            cimb_amount_first_balance_last=True,
             cimb_backfill_missing_date_from_last=True,
-            cimb_allow_no_date_no_amount_continuation=True,
         ),
         transaction_bound=200,  # Increase boundary to accommodate CIMB layout
         transaction_date_format="%d %b",  # For "01 Aug" format
@@ -68,9 +66,9 @@ class Cimb(BankBase):
     # Bank identifiers for automatic detection
     identifiers = [
         [
-            # You'll need to examine CIMB PDF metadata and text to set these
-            TextIdentifier("CIMB"),  # Basic text identifier
-            # MetadataIdentifier(creator="...", producer="..."),  # Add if known
+            # More specific text identifier to avoid conflicts with DBS
+            TextIdentifier("CIMB BANK"),  # Look for "CIMB BANK" instead of just "CIMB"
+            # MetadataIdentifier(creator="...", producer="..."),  # Add if known from actual CIMB PDFs
         ],
     ]
 

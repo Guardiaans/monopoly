@@ -53,21 +53,26 @@ class DescriptionExtractor:
             ),
         )
 
-        # Include multiple previous lines if within margin and not a transaction line
+        # Include multiple previous lines if within margin and not a transaction line (CIMB-specific enhancement)
         margin = context.multiline_config.include_prev_margin
         if margin and context.idx > 0:
-            idx = context.idx - 1
-            while idx >= 0:
-                prev_line = context.lines[idx]
-                # stop at blank or if it looks like a transaction line
-                if not prev_line.strip() or self.pattern.search(prev_line):
-                    break
-                # avoid pulling in a previous amount line
-                if re.search(r"\d+\.\d{2}(\s+\d+\.\d{2})?$", prev_line):
-                    break
-                if builder.include_previous_line(prev_line, margin) is False:
-                    break
-                idx -= 1
+            # Use enhanced multi-line previous line inclusion for CIMB only
+            if getattr(context.multiline_config, "cimb_backfill_missing_date_from_last", False):
+                idx = context.idx - 1
+                while idx >= 0:
+                    prev_line = context.lines[idx]
+                    # stop at blank or if it looks like a transaction line
+                    if not prev_line.strip() or self.pattern.search(prev_line):
+                        break
+                    # avoid pulling in a previous amount line
+                    if re.search(r"\d+\.\d{2}(\s+\d+\.\d{2})?$", prev_line):
+                        break
+                    if builder.include_previous_line(prev_line, margin) is False:
+                        break
+                    idx -= 1
+            else:
+                # Standard behavior for other banks: only include one previous line
+                builder.include_previous_line(context.lines[context.idx - 1], margin)
 
         # Include subsequent lines until a break condition is met
         for next_line in context.lines[context.idx + 1 :]:
@@ -136,12 +141,19 @@ class DescriptionBuilder:
 
         # Exclude footer-like lines (e.g., totals) but avoid breaking normal description continuations
         if words_match and numbers_match:
-            footer_keywords = ("sub total", "subtotal", "total", "page")
-            if any(k in line.lower() for k in footer_keywords):
+            # Enhanced footer detection for CIMB, standard detection for others
+            if self.allow_unlabeled_continuation:  # This is set for CIMB only
+                footer_keywords = ("sub total", "subtotal", "total", "page")
+                if any(k in line.lower() for k in footer_keywords):
+                    words_end = words_match.span()[1]
+                    numbers_start = numbers_match.span()[0]
+                    if numbers_start > words_end and numbers_start - words_end > MIN_BREAK_GAP:
+                        return True
+            else:
+                # Standard behavior for other banks
                 words_end = words_match.span()[1]
                 numbers_start = numbers_match.span()[0]
-                if numbers_start > words_end and numbers_start - words_end > MIN_BREAK_GAP:
-                    return True
+                return numbers_start > words_end and numbers_start - words_end > MIN_BREAK_GAP
 
         return False
 
@@ -191,7 +203,7 @@ class BaseStatement:
         self.bank_name = bank_name
         self.pages = pages
         self.header = header
-    # track the last seen transaction date for lines missing the date
+        # track the last seen transaction date for lines missing the date (CIMB only)
         self.previous_transaction_date = None
 
     @cached_property
@@ -235,10 +247,12 @@ class BaseStatement:
                         multiline_config=self.config.multiline_config,
                     )
                     processed_match = self.process_match(match, context)
-                    # Final fallback: if transaction_date is still missing, use the last seen date
-                    if not processed_match.groupdict.transaction_date and self.previous_transaction_date:
+                    # Final fallback: if transaction_date is still missing, use the last seen date (CIMB only)
+                    if (not processed_match.groupdict.transaction_date 
+                        and self.previous_transaction_date 
+                        and getattr(self.config.multiline_config, "cimb_backfill_missing_date_from_last", False)):
                         processed_match.groupdict.transaction_date = self.previous_transaction_date
-                    # Keep track of last seen transaction_date for cross-line/page carry-over
+                    # Keep track of last seen transaction_date for cross-line/page carry-over (standard behavior)
                     if processed_match.groupdict.transaction_date:
                         self.previous_transaction_date = processed_match.groupdict.transaction_date
                     transaction = Transaction(
@@ -259,6 +273,7 @@ class BaseStatement:
         return False
 
     def pre_process_transaction_groupdict(self, groupdict: TransactionGroupDict) -> TransactionGroupDict:
+        # Standard multiline transaction date handling for all banks
         if self.config.multiline_config.multiline_transaction_date:
             if groupdict.transaction_date:
                 self.previous_transaction_date = groupdict.transaction_date
@@ -289,8 +304,10 @@ class BaseStatement:
             multiline_description = self.get_multiline_description(context)
             match.groupdict.description = multiline_description
 
-        # Fill missing transaction_date by looking up nearby lines for a date like "01 Aug"
-        if context.multiline_config.multiline_transaction_date and not match.groupdict.transaction_date:
+        # Fill missing transaction_date by looking up nearby lines for a date like "01 Aug" (CIMB only)
+        if (context.multiline_config.multiline_transaction_date 
+            and not match.groupdict.transaction_date
+            and getattr(context.multiline_config, "cimb_backfill_missing_date_from_last", False)):
             date_re = re.compile(str(ISO8601.DD_MMM), re.IGNORECASE)
             # Look backward first
             for prev_line in reversed(context.lines[: context.idx]):
