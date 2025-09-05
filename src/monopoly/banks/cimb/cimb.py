@@ -66,9 +66,12 @@ class Cimb(BankBase):
     # Bank identifiers for automatic detection
     identifiers = [
         [
-            # More specific text identifier to avoid conflicts with DBS
-            TextIdentifier("CIMB BANK"),  # Look for "CIMB BANK" instead of just "CIMB"
-            # MetadataIdentifier(creator="...", producer="..."),  # Add if known from actual CIMB PDFs
+            # More specific text identifier to avoid conflicts with other banks
+            TextIdentifier("CIMB Bank"),  # Look for "CIMB Bank"
+            MetadataIdentifier(
+                format="PDF 1.3",
+                producer="Rendering Engine 7",
+            ),
         ],
     ]
 
