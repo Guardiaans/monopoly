@@ -23,3 +23,5 @@ dist
 !**/examples/*.pdf
 
 .claude
+
+scripts

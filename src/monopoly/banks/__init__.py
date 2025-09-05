@@ -8,6 +8,7 @@ from .canadian_tire import CanadianTire
 from .capitalone import CapitalOneCanada
 from .chase import Chase
 from .cibc import CIBC
+from .cimb import Cimb
 from .citibank import Citibank
 from .dbs import Dbs
 from .detector import BankDetector
@@ -31,6 +32,7 @@ banks: list[type["BankBase"]] = [
     CapitalOneCanada,
     Chase,
     CIBC,
+    Cimb,
     Citibank,
     Dbs,
     ExampleBank,

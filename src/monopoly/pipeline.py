@@ -138,19 +138,31 @@ class Pipeline:
         output_path = output_directory / filename
         logger.debug("Writing CSV to file path: %s", output_path)
 
-        with open(output_path, mode="w", encoding="utf8") as file:
-            writer = csv.writer(file)
+        def try_write(path: Path) -> Path | None:
+            try:
+                with open(path, mode="w", encoding="utf8") as file:
+                    writer = csv.writer(file)
+                    writer.writerow(statement.columns)  # header
+                    for transaction in transactions:
+                        writer.writerow([transaction.date, transaction.description, transaction.amount])
+                return path
+            except PermissionError:
+                return None
 
-            # header
-            writer.writerow(statement.columns)
+        # Attempt write; if the file is locked (e.g., open in Excel), write to a suffixed filename
+        written = try_write(output_path)
+        if written:
+            return written
 
-            for transaction in transactions:
-                writer.writerow(
-                    [
-                        transaction.date,
-                        transaction.description,
-                        transaction.amount,
-                    ]
-                )
+        base = output_path.stem
+        ext = output_path.suffix or ".csv"
+        for i in range(1, 6):
+            alt = output_path.with_name(f"{base}-{i}{ext}")
+            logger.debug("Primary path locked. Trying alternate file path: %s", alt)
+            written = try_write(alt)
+            if written:
+                return written
 
-        return output_path
+        # If still failing after retries, raise a clear error
+        msg = f"Could not write CSV due to file lock or permissions: {output_path}"
+        raise PermissionError(msg)

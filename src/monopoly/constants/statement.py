@@ -21,6 +21,7 @@ class BankNames(AutoEnum):
     CANADIAN_TIRE = auto()
     CHASE = auto()
     CIBC = auto()
+    CIMB = auto()
     CITIBANK = auto()
     DBS = auto()
     HSBC = auto()
@@ -81,6 +82,7 @@ class SharedPatterns(StrEnum):
 class StatementBalancePatterns(RegexEnum):
     DBS = r"(?P<description>PREVIOUS BALANCE?)\s+" + SharedPatterns.AMOUNT_EXTENDED_WITHOUT_EOL
     CITIBANK = r"(?P<description>BALANCE PREVIOUS STATEMENT?)\s+" + SharedPatterns.AMOUNT_EXTENDED_WITHOUT_EOL
+    CIMB = r"(?P<description>Balance brought forward)\s+(?P<amount>\d{1,3}(?:,\d{3})*\.\d{2})"
     HSBC = r"(?P<description>Previous Statement Balance?)\s+" + SharedPatterns.AMOUNT_EXTENDED_WITHOUT_EOL
     MAYBANK_MY = r"(?P<description>YOUR PREVIOUS STATEMENT BALANCE?)\s+" + SharedPatterns.AMOUNT_EXTENDED_WITHOUT_EOL
     MAYBANK_SG = (
@@ -163,6 +165,13 @@ class CreditTransactionPatterns(RegexEnum):
         rf"(?P<posting_date>{ISO8601.DD_MM})\s+"
         rf"(?P<transaction_date>{ISO8601.DD_MM})\s+" + SharedPatterns.DESCRIPTION + SharedPatterns.AMOUNT_EXTENDED
     )
+    # CIMB Credit: lines look like "11/06  01/06  DESCRIPTION ....  2.20"
+    CIMB = (
+        rf"(?P<posting_date>{ISO8601.DD_MM})\s+"
+        rf"(?P<transaction_date>{ISO8601.DD_MM})\s+"
+        + SharedPatterns.DESCRIPTION
+        + SharedPatterns.AMOUNT_EXTENDED
+    )
     OCBC = r"(?P<transaction_date>\d+/\d+)\s+" + SharedPatterns.DESCRIPTION + SharedPatterns.AMOUNT_EXTENDED
     RBC = (
         rf"(?P<transaction_date>\b({DateFormats.MMM}[-\s]{DateFormats.DD}))\s+"
@@ -236,6 +245,19 @@ class DebitTransactionPatterns(RegexEnum):
         + SharedPatterns.AMOUNT[:-3]
         + r"(?P<polarity>\-|\+)\s+"
         + SharedPatterns.BALANCE
+    )
+    # CIMB debit layout (SG FastSaver):
+    #   DD MMM  Description text ...        [WITHDRAWAL]    [DEPOSIT]    BALANCE
+    # Amounts are plain decimals without thousands separators.
+    CIMB = (
+        r"(?i)^\s*"
+        rf"(?:(?P<transaction_date>\d{{2}}\s+{DateFormats.MMM})\s+)?"
+        r"(?!\s*Balance\s+(?:brought|carried)\s+forward)"
+        r"(?P<description>.+?)(?=\s+"
+        rf"{SharedPatterns.COMMA_FORMAT}"
+        r")\s+"
+        rf"(?P<amount>{SharedPatterns.COMMA_FORMAT})"
+        rf"(?:\s+(?P<balance>{SharedPatterns.COMMA_FORMAT}))?\s*$"
     )
     OCBC = (
         rf"(?P<transaction_date>{ISO8601.DD_MMM})\s+"

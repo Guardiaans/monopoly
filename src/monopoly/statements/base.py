@@ -48,12 +48,26 @@ class DescriptionExtractor:
             initial_description=context.description,
             description_pos=context.line.find(context.description),
             pattern=self.pattern,
+            allow_unlabeled_continuation=getattr(
+                context.multiline_config, "allow_no_date_no_amount_continuation", False
+            ),
         )
 
-        # Handle previous line if within margin
+        # Include multiple previous lines if within margin and not a transaction line
         margin = context.multiline_config.include_prev_margin
         if margin and context.idx > 0:
-            builder.include_previous_line(context.lines[context.idx - 1], margin)
+            idx = context.idx - 1
+            while idx >= 0:
+                prev_line = context.lines[idx]
+                # stop at blank or if it looks like a transaction line
+                if not prev_line.strip() or self.pattern.search(prev_line):
+                    break
+                # avoid pulling in a previous amount line
+                if re.search(r"\d+\.\d{2}(\s+\d+\.\d{2})?$", prev_line):
+                    break
+                if builder.include_previous_line(prev_line, margin) is False:
+                    break
+                idx -= 1
 
         # Include subsequent lines until a break condition is met
         for next_line in context.lines[context.idx + 1 :]:
@@ -72,10 +86,12 @@ class DescriptionBuilder:
         initial_description: str,
         description_pos: int,
         pattern: re.Pattern,
+        allow_unlabeled_continuation: bool = False,
     ):
         self.description = initial_description
         self.description_pos = description_pos
         self.pattern = pattern
+        self.allow_unlabeled_continuation = allow_unlabeled_continuation
         self.words_pattern = re.compile(r"\s[A-Za-z]+")
         self.numbers_pattern = re.compile(SharedPatterns.AMOUNT)
 
@@ -100,30 +116,46 @@ class DescriptionBuilder:
         if self.pattern.search(line):
             return True
 
+        # Detect if the line looks like a continuation: no amount and no date token
+        has_amount = bool(self.numbers_pattern.search(line))
+        date_re = re.compile(str(ISO8601.DD_MMM), re.IGNORECASE)
+        has_date = bool(date_re.search(line))
+
+        # If enabled by caller, treat lines with neither amount nor date as continuation
+        # (Used for CIMB debit only.)
+        if self.allow_unlabeled_continuation and not has_amount and not has_date:
+            return False
+
+        # Otherwise, enforce alignment guard to avoid gluing a new transaction
         next_pos = self.get_start_pos(line)
-        if not self.is_within_margin(self.description_pos, next_pos, DESCRIPTION_MARGIN):
+        if next_pos >= 0 and not self.is_within_margin(self.description_pos, next_pos, DESCRIPTION_MARGIN):
             return True
 
         words_match = self.words_pattern.search(line)
         numbers_match = self.numbers_pattern.search(line)
 
-        # Exclude footer lines
+        # Exclude footer-like lines (e.g., totals) but avoid breaking normal description continuations
         if words_match and numbers_match:
-            words_end = words_match.span()[1]
-            numbers_start = numbers_match.span()[0]
-            return numbers_start > words_end and numbers_start - words_end > MIN_BREAK_GAP
+            footer_keywords = ("sub total", "subtotal", "total", "page")
+            if any(k in line.lower() for k in footer_keywords):
+                words_end = words_match.span()[1]
+                numbers_start = numbers_match.span()[0]
+                if numbers_start > words_end and numbers_start - words_end > MIN_BREAK_GAP:
+                    return True
 
         return False
 
-    def include_previous_line(self, prev_line: str, margin: int) -> None:
+    def include_previous_line(self, prev_line: str, margin: int) -> bool:
         """Attempt to include the previous line in the description."""
         prev_line = prev_line.strip()
         if not prev_line or self.pattern.search(prev_line):
-            return
+            return False
 
         prev_pos = self.get_start_pos(prev_line)
         if self.is_within_margin(self.description_pos, prev_pos, margin):
             self.description = f"{prev_line} {self.description}"
+            return True
+        return False
 
     def append_line(self, line: str) -> None:
         """Append a new line to the current description."""
@@ -159,6 +191,8 @@ class BaseStatement:
         self.bank_name = bank_name
         self.pages = pages
         self.header = header
+    # track the last seen transaction date for lines missing the date
+        self.previous_transaction_date = None
 
     @cached_property
     def number_pattern(self) -> re.Pattern:
@@ -201,6 +235,12 @@ class BaseStatement:
                         multiline_config=self.config.multiline_config,
                     )
                     processed_match = self.process_match(match, context)
+                    # Final fallback: if transaction_date is still missing, use the last seen date
+                    if not processed_match.groupdict.transaction_date and self.previous_transaction_date:
+                        processed_match.groupdict.transaction_date = self.previous_transaction_date
+                    # Keep track of last seen transaction_date for cross-line/page carry-over
+                    if processed_match.groupdict.transaction_date:
+                        self.previous_transaction_date = processed_match.groupdict.transaction_date
                     transaction = Transaction(
                         **processed_match.groupdict,
                         auto_polarity=self.config.transaction_auto_polarity,
@@ -248,6 +288,33 @@ class BaseStatement:
         if context.multiline_config.multiline_descriptions:
             multiline_description = self.get_multiline_description(context)
             match.groupdict.description = multiline_description
+
+        # Fill missing transaction_date by looking up nearby lines for a date like "01 Aug"
+        if context.multiline_config.multiline_transaction_date and not match.groupdict.transaction_date:
+            date_re = re.compile(str(ISO8601.DD_MMM), re.IGNORECASE)
+            # Look backward first
+            for prev_line in reversed(context.lines[: context.idx]):
+                if not prev_line.strip():
+                    continue
+                if m := date_re.search(prev_line):
+                    date_str = m.group(1)
+                    match.groupdict.transaction_date = date_str
+                    self.previous_transaction_date = date_str
+                    break
+            # If still missing and no previous date known, try a small look-ahead window
+            if not match.groupdict.transaction_date and not self.previous_transaction_date:
+                lookahead_window = context.lines[context.idx + 1 : context.idx + 6]
+                for next_line in lookahead_window:
+                    if not next_line.strip():
+                        continue
+                    if m := date_re.search(next_line):
+                        date_str = m.group(1)
+                        match.groupdict.transaction_date = date_str
+                        self.previous_transaction_date = date_str
+                        break
+            # Finally, if a previous date was known, use it
+            if not match.groupdict.transaction_date and self.previous_transaction_date:
+                match.groupdict.transaction_date = self.previous_transaction_date
         return match
 
     def get_multiline_polarity(self, context: MatchContext):
@@ -271,7 +338,10 @@ class BaseStatement:
         context: MatchContext,
     ) -> str:
         """Combine a transaction description spanning multiple lines into a single string."""
-        extractor = DescriptionExtractor(self.pattern)
+        pat = self.pattern
+        if not isinstance(pat, re.Pattern):
+            pat = re.compile(str(pat))
+        extractor = DescriptionExtractor(pat)
         return extractor.get_multiline_description(context) or ""
 
     @property

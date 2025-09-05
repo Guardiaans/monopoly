@@ -30,6 +30,13 @@ class MultilineConfig:
     multiline_statement_date: bool = False
     multiline_transaction_date: bool = False
     include_prev_margin: int | None = None
+    # When True, description combiner will treat lines with neither amount nor date as continuation.
+    # Enable only for banks that require it (e.g., CIMB debit)
+    allow_no_date_no_amount_continuation: bool = False
+    # CIMB-DEBIT ONLY FLAGS (default False so other banks are unaffected)
+    cimb_amount_first_balance_last: bool = False
+    cimb_backfill_missing_date_from_last: bool = False
+    cimb_allow_no_date_no_amount_continuation: bool = False
 
 
 # pylint: disable=too-many-instance-attributes
