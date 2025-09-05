@@ -68,10 +68,10 @@ class Cimb(BankBase):
         [
             # More specific text identifier to avoid conflicts with other banks
             TextIdentifier("CIMB Bank"),  # Look for "CIMB Bank"
-            MetadataIdentifier(
-                format="PDF 1.3",
-                producer="Rendering Engine 7",
-            ),
+            # MetadataIdentifier( 
+            #     format="PDF 1.3",
+            #     producer="Rendering Engine 7",
+            # ), # This metadata is only for CIMB debit
         ],
     ]
 
